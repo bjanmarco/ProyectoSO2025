@@ -1,0 +1,15 @@
+_start 300
+.NumeroPalabras 10
+.NombreProg PruebaNormal
+// Programa: Calculo simple (A + B - C)
+// 300: LOAD Inm 50   (04 1 00050) -> 04100050
+// 301: SUM Inm 25    (00 1 00025) -> 00100025
+// 302: RES Inm 10    (01 1 00010) -> 01100010
+// 303: STR Dir 500   (05 0 00500) -> 05000500
+// 304: JMP 304       (27 0 00300) -> 27000304 (Loop fin)
+
+04100050
+00100025
+01100010
+05000500
+27000304

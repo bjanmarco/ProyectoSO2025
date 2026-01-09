@@ -182,6 +182,12 @@ extern Word main_memory[MEM_SIZE];
 // CPU Registers
 extern Registers cpu_registers;
 
+// Flag Global de Interrupciones Pendientes
+// Sencillo: 1 = Interrupción Pendiente, 0 = Nada
+// En un hardware real esto serían líneas físicas hacia la CPU.
+extern int interrupt_pending_dma; // Línea de interrupción del DMA (INT 4)
+
+
 // Disco Duro
 extern HardDisk hdd;
 
@@ -189,7 +195,13 @@ extern HardDisk hdd;
 extern DMA_Controller dma;
 
 // Bus del Sistema (Mutex)
-extern pthread_mutex_t system_bus_lock;
+#include <semaphore.h>
+
+/* ... (omitted constants) ... */
+
+// Bus del Sistema (Semáforo para arbitraje)
+// Usamos un semáforo binario (valor 1) para controlar quién usa el bus.
+extern sem_t system_bus_lock;
 
 /* =========================================================================
  * 6. API DE HARDWARE
@@ -198,6 +210,9 @@ extern pthread_mutex_t system_bus_lock;
 // Inicialización
 void hardware_init();
 void hardware_shutdown();
+void memory_init();
+void disk_init();
+void disk_save();
 
 // Memoria
 void mem_write(int address, Word data);
@@ -206,6 +221,8 @@ Word mem_read(int address);
 // CPU
 void cpu_cycle();       // Ejecuta fetch-decode-execute
 void cpu_reset();       // Reinicia registros
+int word_to_int(Word w);
+Word int_to_word(int val);
 
 // Disco / DMA
 void dma_start_transfer(); 

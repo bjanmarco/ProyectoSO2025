@@ -1,0 +1,151 @@
+1. Introducción y Objetivos
+Para esta primera fase, el grupo de Sistemas Operativos requiere que usted implemente una arquitectura virtual, que correrá sobre el sistema operativo nativo (LINUX), cuyo objetivo será implementar la capa de hardware y ofrecer servicios que permitan al minikernel (que usted desarrollará en la segunda fase) su manejo.
+La idea es colocar una capa encima del Sistema Operativo a la que podemos denominar hardware virtual, invirtiendo el proceso usual de abstracción. Esta fase será sencilla pero indispensable para el éxito en la implementación del minikernel.
+
+--------------------------------------------------------------------------------
+2. Especificación de la Arquitectura (CPU y Memoria)
+Organización de Datos:
+• Tamaño de palabra: Ocho (8) dígitos decimales.
+• Representación: Signo magnitud. El primer dígito indica el signo (0 es +, 1 es -) y los 7 restantes la magnitud.
+Registros del Procesador: La arquitectura no maneja registros de propósito general, utiliza un Registro Acumulador (AC) para la mayoría de las operaciones.
+• Registros de Propósito Especial:
+    ◦ MAR: Dirección de memoria a buscar en fase de búsqueda.
+    ◦ MDR: Dato donde apunta el MAR.
+    ◦ IR: Almacena la instrucción actual.
+    ◦ RB / RL: Registro Base y Registro Límite (Protección de memoria).
+    ◦ RX: Registro base de la pila.
+    ◦ SP: Registro puntero al tope de la pila.
+    ◦ PSW (Palabra de Estado del Sistema):.
+Detalle del PSW (Program Status Word):
+• Código de condición (1 dígito): 0 (X=Y), 1 (X<Y), 2 (X>Y), 3 (Desbordamiento).
+• Modo de operación (1 dígito): 0 (Usuario), 1 (Kernel/Privilegiado).
+• Interrupciones (1 dígito): 0 (Deshabilitadas), 1 (Habilitadas).
+• PC (5 dígitos): Dirección de la próxima instrucción.
+Memoria RAM:
+• Arreglo de 2000 posiciones.
+• Primeras 300 reservadas para el Sistema Operativo, el resto para el usuario.
+
+--------------------------------------------------------------------------------
+3. Formato y Set de Instrucciones
+Formato de Instrucción:
+• Código de Operación: 2 dígitos.
+• Direccionamiento: 1 dígito.
+    ◦ 0 = Directo (los 5 últimos dígitos referencian memoria).
+    ◦ 1 = Inmediato (los 5 últimos dígitos son el dato).
+    ◦ 2 = Indexado (los 5 últimos dígitos son un índice a partir del acumulador).
+• Valor: 5 dígitos.
+
+Conjunto de Instrucciones Detallado (Opcodes):
+
+Grupo 1: Instrucciones Aritméticas (Operan sobre AC)
+Código	Mnemónico	Descripción Precisa
+00	sum		Suma el dato especificado al registro AC. AC = AC + dato. Actualiza el código de condición (CC) en el PSW según el resultado (0, <0, >0, overflow).
+01	res		Resta el dato especificado al registro AC. AC = AC - dato. Actualiza el CC.
+02	mult		Multiplica el dato especificado por el registro AC. AC = AC * dato. Actualiza el CC (puede generar overflow).
+03	divi		Divide el registro AC entre el dato especificado. AC = AC / dato (división entera). Actualiza el CC. Debe manejar división por cero (interrupción).
+
+Grupo 2: Transferencia de Datos entre AC y Memoria
+Código	Mnemónico	Descripción Precisa
+04	load		Carga en AC el contenido de la posición de memoria especificada por el operando (según modo de direccionamiento). AC = M[dirección]. No modifica CC.
+05	str		Almacena el contenido de AC en la posición de memoria especificada. M[dirección] = AC. No modifica CC.
+
+Grupo 3: Transferencia entre AC y Registros Especiales
+Código	Mnemónico	Descripción Precisa
+06	loadrx		Carga RX en AC. AC = RX (pero AC es una palabra y RX es un entero; debes convertir). No modifica CC.
+07	strrx		Almacena AC en RX. RX = AC (conversión de palabra a entero). No modifica CC.
+
+Grupo 4: Comparación y Saltos Condicionales
+Código	Mnemónico	Descripción Precisa
+08	comp		Compara el dato especificado con el valor de AC. Establece el CC en el PSW según: 0 si AC == dato, 1 si AC < dato, 2 si AC > dato.
+09	jmpe		Salta si igual. Si AC == M[SP], entonces PC = dirección especificada. Usa el tope de la pila como valor de comparación.
+10	jmpne		Salta si no igual. Si AC != M[SP], entonces PC = dirección.
+11	jmplt		Salta si menor que. Si AC < M[SP], entonces PC = dirección.
+12	jmplgt		Salta si mayor que. Si AC > M[SP], entonces PC = dirección.
+
+Grupo 5: Control del Sistema y Llamadas
+Código	Mnemónico	Descripción Precisa
+13	svc		Llamada al sistema. Genera una interrupción INT_SVC (código 2). El número de servicio (syscall) se pasa en AC. Los parámetros están en la pila.
+14	retrn		Retorno de subrutina. Restaura el PC desde la pila (o según convención de llamada que definas).
+15	hab		Habilita interrupciones. Establece el bit de habilitación de interrupciones en el PSW a 1.
+16	dhab		Deshabilita interrupciones. Establece el bit de habilitación de interrupciones en el PSW a 0.
+17	tti		Establece tiempo del reloj. El valor especificado indica cada cuántos ciclos de CPU se generará una interrupción de reloj (INT_TIMER, código 3). Ej: 17000012 → reloj cada 12 ciclos.
+18	chmod		Cambia modo de ejecución. Alterna entre MODE_USER (0) y MODE_KERNEL (1) en el PSW. Solo permitido si ya estás en modo kernel.
+
+Grupo 6: Gestión de Registros Base, Límite y Pila
+Código	Mnemónico	Descripción Precisa
+19	loadrb		Carga RB en AC. AC = RB (conversión entero → palabra).
+20	strrb		Almacena AC en RB. RB = AC (conversión palabra → entero).
+21	loadrl		Carga RL en AC. AC = RL.
+22	strrl		Almacena AC en RL. RL = AC.
+23	loadsp		Carga SP en AC. AC = SP.
+24	strsp		Almacena AC en SP. SP = AC.
+
+Grupo 7: Operaciones de Pila
+Código	Mnemónico	Descripción Precisa
+25	psh		Apila. SP = SP - 1 (crece hacia abajo), M[SP] = AC.
+26	pop		Desapila. AC = M[SP], SP = SP + 1.
+
+Grupo 8: Salto Incondicional
+Código	Mnemónico	Descripción Precisa
+27	j		Salto incondicional. PC = dirección especificada.
+
+Grupo 9: Instrucciones de E/S (Comunicación con DMA)
+Código	Mnemónico	Descripción Precisa
+28	sdmap		Establece pista. dma.selected_track = valor.
+29	sdmac		Establece cilindro. dma.selected_cylinder = valor.
+30	sdmas		Establece sector. dma.selected_sector = valor.
+31	sdmaio		Establece dirección de E/S. dma.io_direction = valor (0 = leer de disco a RAM, 1 = escribir de RAM a disco).
+32	sdmam		Establece dirección de memoria. dma.memory_address = valor.
+33	sdmaon		Inicia DMA. Comienza la transferencia disco↔memoria en un hilo separado. Al finalizar, el DMA establece ESTADOdma (0=éxito,1=error) y genera interrupción INT_IO_DONE (código 4).
+
+
+--------------------------------------------------------------------------------
+4. Componentes del Sistema y Concurrencia
+Hardware Requerido: La máquina debe contar con 1 procesador, 1 disco magnético, 1 DMA y un bus compartido.
+Bus del Sistema y Arbitraje: Debe haber algún tipo de arbitraje para el bus compartido entre el procesador y el DMA. Cuando el procesador accede a memoria, no debe haber inconsistencia si el DMA intenta hacerlo también. Se deben controlar las condiciones de competencia.
+Manejo de DMA y Disco:
+• El procesador configura el DMA con las instrucciones sdma(x) y lo inicia con sdmaon.
+• El DMA se comunica con la memoria usando el bus, pero su comunicación con el disco es independiente.
+• Disco: Arreglo de al menos 3 dimensiones (Pista, Cilindro, Sector). Mínimo 10 pistas, 10 cilindros, 100 sectores/cilindro. Cada sector almacena un dato de 9 caracteres.
+• Al finalizar la E/S, el DMA actualiza su estado (0=éxito, 1=error) e interrumpe al procesador.
+
+--------------------------------------------------------------------------------
+5. Mecanismos de Control (Protección e Interrupciones)
+Protección de Memoria: Toda dirección de memoria es relativa al proceso. Se debe verificar: RB <= (Dirección Relativa + RB) <= RL. Si falla, se genera interrupción por direccionamiento inválido. En modo privilegiado (Kernel) se omite esta comprobación.
+Sistema de Interrupciones: Se realiza mediante un vector de interrupciones indexado por el código. La máquina debe salvaguardar registros (contexto) antes de ir al manejador y restaurarlos al volver.
+Códigos de Interrupción:
+• 0: Código de llamada al sistema inválido.
+• 1: Código de interrupción inválido.
+• 2: Llamada al sistema (svc).
+• 3: Reloj.
+• 4: Finalización de operación de E/S.
+• 5: Instrucción inválida.
+• 6: Direccionamiento inválido.
+• 7: Underflow.
+• 8: Overflow.
+
+--------------------------------------------------------------------------------
+6. Ejecución, Carga y Depuración
+Formato de Archivo de Entrada: Los programas se cargan con el siguiente formato:
+_start <linea de inicio>
+.NumeroPalabras <cantidad>
+.NombreProg <nombre>
+// Instrucciones (ej: 04100005)
+.
+Modos de Ejecución (Consola): Al iniciar, el sistema levanta una consola que permite dos modos:
+1. Modo Normal: Ejecuta el programa completo y retorna a la consola.
+2. Modo Debugger: Ejecuta instrucción por instrucción, mostrando:
+    ◦ Dirección de memoria.
+    ◦ La instrucción ejecutada.
+    ◦ El resultado.
+    ◦ Opción para inspeccionar registros o continuar.
+
+--------------------------------------------------------------------------------
+7. Requisitos Técnicos y Entregables
+Requisitos de Implementación:
+• Lenguaje C sobre Linux.
+• Uso obligatorio de Makefile y cabeceras .h.
+• Implementación fiel del Ciclo de Instrucción (Búsqueda con MAR/MDR/IR/PC y Ejecución).
+• Logs: Toda acción debe quedar registrada en un archivo log. Las interrupciones deben imprimirse en log y salida estándar.
+• Concurrencia: Uso de hilos (pthreads) o procesos para simular CPU/DMA.
+• Código extensamente comentado.

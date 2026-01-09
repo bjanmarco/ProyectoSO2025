@@ -1,0 +1,17 @@
+_start 300
+.NumeroPalabras 10
+.NombreProg PruebaDebug
+// Programa: Contador Regresivo (5, 4, 3...)
+// 300: LOAD Inm 3    (04 1 00003) -> 04100003  (Carga 3 en AC)
+// 301: STR Dir 500   (05 0 00500) -> 05000500  (Guarda en Mem[500])
+// 302: RES Inm 1     (01 1 00001) -> 01100001  (Resta 1)
+// 303: COMP Inm 0    (08 1 00000) -> 08100000  (Compara con 0)
+// 304: JMPNE 301     (10 0 00301) -> 10000301  (Si no es 0, salta a 301)
+// 305: JMP 305       (27 0 00305) -> 27000305  (Fin loop)
+
+04100003
+05000500
+01100001
+08100000
+10000301
+27000305

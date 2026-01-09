@@ -1,0 +1,14 @@
+load prueba_debug.txt
+debug
+
+
+
+
+
+
+
+
+q
+memory 500
+registers
+exit

@@ -1,0 +1,5 @@
+load prueba_suma.txt
+run
+memory 400
+registers
+exit
