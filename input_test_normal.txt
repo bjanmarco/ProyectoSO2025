@@ -1,0 +1,5 @@
+load prueba_normal.txt
+run
+memory 500
+registers
+exit
