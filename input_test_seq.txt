@@ -1,0 +1,5 @@
+load prueba_halt.txt
+run
+load prueba_halt.txt
+run
+exit

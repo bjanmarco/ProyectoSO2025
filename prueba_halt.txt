@@ -1,0 +1,8 @@
+_start 300
+.NumeroPalabras 2
+.NombreProg HaltTest
+// 300: LOAD Inm 10 (04 1 00010) -> AC=10
+// 301: SUM Inm 5 (00 1 00005) -> AC=15
+// No JMP loop at end. Should hit Sentinel.
+04100010
+00100005

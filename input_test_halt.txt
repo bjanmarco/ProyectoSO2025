@@ -1,0 +1,3 @@
+load prueba_halt.txt
+run
+exit

@@ -1,62 +1,68 @@
 #include <stdio.h>
 #include <string.h>
 #include "hardware.h"
-#include "../logger.h" // Asumiendo que logger.h está en el root, ajustaremos paths en Makefile
+#include "../logger.h" 
 
-// Variables Globales definidas en hardware.h
+// Aqui esta la memoria principal de la maquina
 Word main_memory[MEM_SIZE];
+// Este semaforo es el candado para que nadie mas use el Bus
 sem_t system_bus_lock;
 
 /*
  * Inicialización de la Memoria
+ * Borramos todo y creamos el candado (semáforo)
  */
 void memory_init() {
-    // Limpiar memoria
+    // Poner ceros en toda la memoria (memset es mas rapido que un for)
     memset(main_memory, 0, sizeof(main_memory));
     
-    // Inicializar semáforo del bus (valor 1 = desbloqueado)
+    // Iniciamos el semaforo.
+    // El '1' al final significa que empieza libre (verde).
     sem_init(&system_bus_lock, 0, 1);
     
-    log_event("Memoria inicializada (%d palabras)", MEM_SIZE);
+    log_event("Memoria lista y limpia (%d espacios)", MEM_SIZE);
 }
 
 /*
- * Escritura en Memoria (Con protección de bus)
+ * Escribir en Memoria
+ * IMPORTANTE: Hay que pedir permiso antes de escribir!
  */
 void mem_write(int address, Word data) {
+    // Seguridad primero: checar que la direccion exista
     if (address < 0 || address >= MEM_SIZE) {
-        log_event("ERROR FATAL: Intento de escritura fuera de rango: %d", address);
+        log_event("ERROR: Quieres escribir fuera de la memoria! (%d)", address);
         return; 
-        // En una implementación real, esto debería lanzar una excepción hardware
-        // pero aquí lo manejaremos en la CPU antes de llamar a esto usualmente.
     }
 
-    // Adquirir el bus
+    // Pedimos el bus (Wait = esperar hasta que este libre)
     sem_wait(&system_bus_lock);
     
+    // Escribimos
     main_memory[address] = data;
     
-    // Liberar el bus
+    // Soltamos el bus (Post = avisar que ya terminamos)
     sem_post(&system_bus_lock);
 }
 
 /*
- * Lectura de Memoria (Con protección de bus)
+ * Leer de Memoria
+ * Tambien hay que usar el semaforo para que no lean mientras alguien escribe
  */
 Word mem_read(int address) {
-    Word data = {0, 0};
+    Word data = {0, 0}; // Valor vacio por si falla
 
     if (address < 0 || address >= MEM_SIZE) {
-        log_event("ERROR FATAL: Intento de lectura fuera de rango: %d", address);
+        log_event("ERROR: Quieres leer fuera de la memoria! (%d)", address);
         return data;
     }
 
-    // Adquirir el bus
+    // Pedimos el bus
     sem_wait(&system_bus_lock);
     
+    // Leemos
     data = main_memory[address];
     
-    // Liberar el bus
+    // Soltamos el bus
     sem_post(&system_bus_lock);
     
     return data;

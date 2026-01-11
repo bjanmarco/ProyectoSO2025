@@ -9,6 +9,5 @@ debug
 
 
 q
-memory 500
 registers
 exit

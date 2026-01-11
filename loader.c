@@ -80,7 +80,20 @@ int load_program(const char *filename) {
     }
 
     fclose(f);
-    printf("Programa cargado exitosamente. %d instrucciones.\n", instructions_loaded);
+    
+    // INYECCION DE CENTINELA (END_PROGRAM)
+    // Escribimos el valor magico justo despues de la ultima instruccion
+    // para que la CPU se detenga sola.
+    if (start_address + instructions_loaded < MEM_SIZE) {
+        Word sentinel;
+        sentinel.sign = 0;
+        sentinel.digits = SENTINEL_VAL;
+        mem_write(start_address + instructions_loaded, sentinel);
+        // instructions_loaded++; // No contamos el sentinel como instruccion de usuario
+        log_event("Sentinel END_PROGRAM inyectado en %d", start_address + instructions_loaded);
+    }
+    
+    printf("Programa cargado exitosamente. %d instrucciones (+ Sentinel).\n", instructions_loaded);
     log_event("Carga finalizada. %d instrucciones en memoria.", instructions_loaded);
     
     // Configurar Registros Base y Limite para el proceso cargado

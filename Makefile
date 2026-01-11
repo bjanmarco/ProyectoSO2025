@@ -12,6 +12,7 @@ all: $(TARGET)
 
 $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -o $(TARGET) $(OBJS)
+	rm -f $(OBJS)
 
 # Regla genérica para construir .o desde .c
 %.o: %.c

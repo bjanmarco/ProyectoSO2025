@@ -1,5 +1,5 @@
 _start 300
-.NumeroPalabras 10
+.NumeroPalabras 4
 .NombreProg SumaPredefinida
 // Programa: Carga 10 en AC, Suma 20, Almacena en 400
 // Init:
@@ -7,8 +7,6 @@ _start 300
 // 301: SUM Inm 20 (00 1 00020) => 00100020
 // 302: STR Dir 400 (05 0 00400) => 05000400
 // 303: JMP 303 (Loop infinito/Fin) => 27000303
-
 04100010
 00100020
 05000400
-27000303

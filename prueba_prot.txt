@@ -1,0 +1,7 @@
+_start 300
+.NumeroPalabras 2
+.NombreProg ProtTest
+// 300: LOAD Dir 1700 (04 0 01700) -> 04001700. Addr = 1700+300=2000 > RL(1999). Debe fallar (INT 6).
+// 301: JMP 1 (27 0 00001) -> Addr = 1+300=301. Loop infinito limpio.
+04001700
+27000001

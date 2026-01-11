@@ -1,0 +1,7 @@
+_start 300
+.NumeroPalabras 2
+.NombreProg UnderTest
+// 300: POP (26 0 00000). Stack is empty (SP=RX). Should Trigger INT 7.
+// 301: JMP 1 (Loop)
+26000000
+27000001

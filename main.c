@@ -7,34 +7,36 @@
 #include "loader.h"
 #include "logger.h"
 
-// Variable para controlar el hilo de CPU si decidimos correrlo aparte
-// En esta implementación simple (monohilo para el step-by-step), 
-// controlaremos cpu_cycle() desde el main loop en modo debug,
-// o un loop continuo en modo normal.
+// Este es el programa principal.
+// Desde aqui controlamos si estamos debugeando o corriendo normal.
 
 void print_help() {
-    printf("\n--- Comandos Disponibles ---\n");
-    printf(" load <archivo> : Carga un programa en memoria\n");
-    printf(" run            : Ejecuta el programa en Modo Normal (hasta finalizar)\n");
-    printf(" debug          : Entra en Modo Debugger (paso a paso)\n");
-    printf(" registers      : Muestra el estado de los registros\n");
-    printf(" memory <dir>   : Muestra el contenido de una direccion de memoria\n");
-    printf(" exit           : Salir del simulador\n");
+    printf("\n--- MUNDO DE CONTROL ---\n");
+    printf(" load <archivo> : Carga tu programa a memoria\n");
+    printf(" run            : Corre todo de un jalon (hasta que termine o se cicle)\n");
+    printf(" debug          : Corre paso a paso para ver que pasa\n");
+    printf(" registers      : Chismea como estan los registros ahorita\n");
+    printf(" memory <dir>   : Ve que hay en esa direccion de memoria\n");
+    printf(" exit           : Vamonos\n");
     printf("----------------------------\n");
 }
 
+// Muestra bonita la info de los registros
 void show_registers() {
-    printf("\n[Registros CPU]\n");
-    printf(" AC:  [%d] %07d\n", cpu_registers.AC.sign, cpu_registers.AC.digits);
-    printf(" PC:  %05d\n", cpu_registers.PSW.pc);
-    printf(" SP:  %05d\n", cpu_registers.SP);
-    printf(" PSW: CC=%d Mode=%d Int=%d\n", cpu_registers.PSW.condition_code, cpu_registers.PSW.operation_mode, cpu_registers.PSW.interrupt_enable);
-    printf(" IR:  Op=%02d Mode=%d Val=%05d\n", cpu_registers.IR.cod_op, cpu_registers.IR.direccionamiento, cpu_registers.IR.valor);
+    printf("\n[ESTADO CPU]\n");
+    printf(" AC (Acumulador): [%d] %07d\n", cpu_registers.AC.sign, cpu_registers.AC.digits);
+    printf(" PC (Contador)  : %05d\n", cpu_registers.PSW.pc);
+    printf(" SP (Pila)      : %05d\n", cpu_registers.SP);
+    printf(" PSW (Estado)   : CC=%d Modo=%d (0=Usuario, 1=Kernel) Int=%d\n", cpu_registers.PSW.condition_code, cpu_registers.PSW.operation_mode, cpu_registers.PSW.interrupt_enable);
+    printf(" IR (Instrucc)  : Op=%02d Dir=%d Val=%05d\n", cpu_registers.IR.cod_op, cpu_registers.IR.direccionamiento, cpu_registers.IR.valor);
 }
 
+// El Modo Debugger: te deja dar ENTER para avanzar
 void debug_loop() {
-    printf("\n*** MODO DEBUGGER ***\n");
-    printf("Presione ENTER para siguiente instruccion, 'q' para salir al menu principal.\n");
+    printf("\n*** MODO DEBUG (Paso a Paso) ***\n");
+    printf("Dale ENTER para avanzar, o escribe 'q' para salir.\n");
+    
+    cpu_running = 1; // Asegurar que la CPU esta activa
     
     char buf[10];
     while (1) {
@@ -43,69 +45,70 @@ void debug_loop() {
         
         if (buf[0] == 'q') break;
         
-        // Ejecutar un ciclo
+        // Ejecutamos solo UN ciclo de reloj
         cpu_cycle();
         
-        // Mostrar Estado
-        Word last_ir = mem_read(cpu_registers.PSW.pc - 1); // Pq PC ya incrementó
-        // Recalcular para mostrar lo que SE EJECUTÓ
-        // Esto es tricky, mejor mostrar IR actual (que ya tiene la instr)
-        
-        printf(" Ejecutado: Op %d | Resultado AC: %d\n", cpu_registers.IR.cod_op, cpu_registers.AC.digits);
+        // Mostramos que paso
+        printf(" ... Ejecutado. Nuevo estado:\n");
         show_registers();
         
-        // Chequear errores/halt
-        // Como sabemos si terminó? (Spec no tiene HALT, asumimos loop o RETRN final?)
-        // Spec no define instruccion HALT. Asumiremos que si PC apunta a 0 o algo invalido se detiene,
-        // o el usuario decide cuando parar.
+        if (!cpu_running) {
+             printf("\n>>> FIN DE PROGRAMA Detectado. Saliendo de Debug. <<<\n");
+             break;
+        }
     }
 }
 
+// El Modo Normal: corre rapido
 void run_normal() {
-    printf("\n*** EJECUTANDO MODO NORMAL ***\n");
-    printf("Presione Ctrl+C para interrumpir (o espere finalizacion si hay logica de fin).\n");
+    printf("\n*** EJECUTANDO MODO RAPIDO ***\n");
+    printf("Si se cicla, usa Ctrl+C :)\n");
     
-    // Limite de seguridad para evitar loops infinitos en pruebas
+    // Le puse un limite por si acaso hacen un loop infinito los alumnos
     int cycles = 0;
-    while (cycles < 100000) { // 100k ciclos tope
+    
+    // Cambiar a MODO USUARIO para que sirva la proteccion de memoria
+    cpu_registers.PSW.operation_mode = MODE_USER;
+    cpu_running = 1; // Reactivar CPU si estaba detenida
+    
+    printf("[Simulador] Cambiando a Modo USUARIO para ejecucion.\n");
+    
+    while (cycles < 100000 && cpu_running) { // 100k ciclos es suficiente para pruebas
         cpu_cycle();
         cycles++;
         
-        // Aqui deberiamos chequear interrupciones o condiciones de parada
-        // Como no hay HALT explícito, es difícil saber cuándo parar automático.
-        // Quizas si PC llega a una direccion vacía (0)?
-        Word w = mem_read(cpu_registers.PSW.pc);
-        if (w.digits == 0 && w.sign == 0) {
-            // Asumimos NOP/Fin si hay ceros consecutivos?
-            // Riesgo: codigo valido puede ser 0.
-            // Mejor no parar automático salvo error.
-        }
+        // El chequeo de ceros ya no es necesario con el Sentinel
+        // Pero lo dejamos por si acaso.
     }
-    printf("Ejecucion normal pausada (limite ciclos o fin).\n");
+    
+    if (!cpu_running) {
+        printf("\n>>> Programa finalizado correctamente (END_PROGRAM) <<<\n");
+    } else {
+        printf("Terminamos la ejecucion (limite de ciclos).\n");
+    }
 }
 
 int main() {
-    // Inicialización
+    // 1. Preparamos componentes
     logger_init("virtual_machine.log");
     memory_init();
-    disk_init();
+    disk_init(); // Aunque no hace mucho todavia
     cpu_reset();
     
-    // Inicializar DMA (sin start, solo struct)
-    // El hilo DMA start se hace con instrucción.
-    
-    printf(" === SIMULADOR HARDWARE VIRTUAL ===\n");
+    printf(" === MI MAQUINA VIRTUAL 2025 ===\n");
     print_help();
     
     char command[64];
     char arg[64];
     
+    // Loop de la consola (Shell basica)
     while (1) {
-        printf("\nShell> ");
+        printf("\nMaquina> ");
         if (!fgets(command, sizeof(command), stdin)) break;
         
-        command[strcspn(command, "\n")] = 0; // strip newline
+        command[strcspn(command, "\n")] = 0; // quitar el enter del final
         
+        // Checar comandos
         if (strncmp(command, "exit", 4) == 0) {
             break;
         } 
@@ -126,17 +129,17 @@ int main() {
             int addr;
             sscanf(command, "memory %d", &addr);
             Word w = mem_read(addr);
-            printf(" Mem[%d] = %d (Sign: %d)\n", addr, w.digits, w.sign);
+            printf(" Memoria[%d] = %d (Signo: %d)\n", addr, w.digits, w.sign);
         }
         else if (strcmp(command, "help") == 0) {
             print_help();
         }
         else {
-            printf("Comando desconocido.\n");
+            printf("??? Ese comando no existe. Escribe 'help'.\n");
         }
     }
     
-    // Cleanup
+    // Limpiar antes de irnos
     logger_close();
     disk_save();
     

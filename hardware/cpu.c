@@ -4,168 +4,185 @@
 #include "hardware.h"
 #include "../logger.h"
 
+// Aqui estan todos los registros de mi CPU
 Registers cpu_registers;
 
+// Forward Declaration
+void generate_interrupt(int code);
+
 /* =========================================================================
- * FUNCIONES AUXILIARES
+ * FUNCIONES DE AYUDA
+ * Son para convertir de mi estructura Word a int de C para poder sumar/restar
  * ========================================================================= */
 
-// Convierte un Word (Signo, Magnitud) a int (C estándar)
+// Convierte un Word (mi estructura) a un int normal de C
 int word_to_int(Word w) {
     int val = w.digits;
+    // Si el signo es 1, entonces es negativo
     if (w.sign == 1) val = -val;
     return val;
 }
 
-// Convierte int (C estándar) a Word (Signo, Magnitud)
+// Convierte un int normal a mi estructura Word
 Word int_to_word(int val) {
     Word w;
     if (val < 0) {
-        w.sign = 1;
-        w.digits = -val;
+        w.sign = 1;       // Es negativo
+        w.digits = -val;  // Guardamos solo el valor positivo (magnitud)
     } else {
-        w.sign = 0;
+        w.sign = 0;       // Es positivo
         w.digits = val;
     }
-    // Truncar a 7 dígitos de magnitud por seguridad -> REMOVED to allow 8-digit instructions
-    // w.digits %= 10000000;
+    // No truncamos aqui, confiamos en que cabe o se manejo el overflow antes
     return w;
 }
 
 /*
- * Reinicia los registros de la CPU a un estado conocido
+ * Esta funcion pone todo en cero para empezar desde el principio
+ * Es como reiniciar la maquina.
  */
 void cpu_reset() {
-    // cpu_registers.PC = 0; // Eliminado, usar PSW.pc
-    
-    cpu_registers.SP = 0; // Pila vacía (tope inicial)
+    cpu_registers.SP = 0; // La pila empieza en 0? O deberia ser al final?
+                          // Por ahora 0, luego el loader dice donde ponerla.
     cpu_registers.RX = 0;
     cpu_registers.RB = 0;
-    cpu_registers.RL = MEM_SIZE - 1; // Por defecto todo es accesible hasta que el SO diga lo contrario
+    cpu_registers.RL = MEM_SIZE - 1; // Al principio dejamos acceso a todo
     
-    // PSW Inicial: Modo Kernel, Interrupciones Deshabilitadas
+    // PSW Inicial: 
+    // Arrancamos en Modo Kernel (1) para poder cargar cosas.
+    // Interrupciones apagadas (0) para que no nos molesten al inicio.
     cpu_registers.PSW.operation_mode = MODE_KERNEL;
-    cpu_registers.PSW.interrupt_enable = INT_DISABLED;
+    cpu_registers.PSW.interrupt_enable = INT_DISABLED; // 0
     cpu_registers.PSW.condition_code = CC_ZERO;
-    cpu_registers.PSW.pc = 0;
+    cpu_registers.PSW.pc = 0; // Empezamos en la direccion 0
     
-    // Limpiar AC, IR, MAR, MDR
+    // Limpiamos los registros de trabajo
     cpu_registers.AC.sign = 0; cpu_registers.AC.digits = 0;
     cpu_registers.IR.cod_op = 0; cpu_registers.IR.direccionamiento = 0; cpu_registers.IR.valor = 0;
     
-    log_event("CPU Reseteada. PC=0, Modo=KERNEL");
+    // Inicializar Vector de Interrupciones (0-8)
+    // Apuntar a una rutina de "Panico" o "Default" en caso de que no haya SO
+    // Digamos la direccion 200 para pruebas
+    for (int i=0; i<=8; i++) {
+        mem_write(i, int_to_word(200)); 
+    }
+    // Escribimos un RETRN en la direccion 200, para que si salta ahi, solo regrese.
+    // Opcode RETRN = 14 -> 14000000
+    mem_write(200, int_to_word(14000000));
+    
+    cpu_running = 1; // Encendemos motores
+    log_event("CPU Reiniciada. Tabla de Vectores (0-8) apunta a 200. RUNNING=1");
 }
 
-// Actualiza el Condition Code (CC) basado en el AC actual
+// Esta funcion actualiza los codigos CC del PSW segun como quedo el Acumulador
 void update_cc() {
     int val = word_to_int(cpu_registers.AC);
-    if (val == 0) cpu_registers.PSW.condition_code = CC_ZERO;
-    else if (val < 0) cpu_registers.PSW.condition_code = CC_NEGATIVE;
-    else cpu_registers.PSW.condition_code = CC_POSITIVE;
-    // Overflow se maneja por separado en aritmetica
+    if (val == 0) cpu_registers.PSW.condition_code = CC_ZERO;          // 0
+    else if (val < 0) cpu_registers.PSW.condition_code = CC_NEGATIVE;  // 1
+    else cpu_registers.PSW.condition_code = CC_POSITIVE;               // 2
+    // Nota: El overflow (3) se pone directo en la operacion si pasa
 }
 
-// Verifica si una dirección es válida dado el modo (Usuario vs Kernel)
-// Si hay error, genera interrupción y retorna 0. Retorna 1 si OK.
+// Verifica si tenemos permiso de entrar a esa memoria
+// Esto es para proteger la memoria de otros procesos
+// Verifica si tenemos permiso de entrar a esa memoria
+// Esto es para proteger la memoria de otros procesos
 int check_memory_protection(int address) {
-    // En Modo Kernel, acceso total
+    // Si soy Kernel (Superusuario), puedo hacer lo que quiera
     if (cpu_registers.PSW.operation_mode == MODE_KERNEL) return 1;
 
-    // En Modo Usuario, verificar RB <= address <= RL
-    // RECORDAR: address aquí es DIRECTA (física) si ya se sumó el offset, 
-    // PERO la especificación dice: "Dirección Relativa + RB". 
-    // En este simulador, la dirección que llega aquí ya debería ser la final.
-    // Asumiremos que 'address' es la dirección efectiva.
-    
-    // NOTA: La especificación dice "Toda dirección es relativa al proceso".
-    // Esto implica que las direcciones lógicas 0..N se mapean a RB..RB+N.
-    // Sin embargo, las instrucciones 'Direccionamiento Directo' dan una dirección final.
-    // Para simplificar, asumiremos que si es Modo Usuario, la instrucción ya trae la dirección LÓGICA,
-    // y nosotros debemos sumar RB y chequear RL.
-    
-    // correccion: las instrucciones usan direccionamiento. Vamos a asumir que las funciones de resolución
-    // de direcciones hacen la traducción y chequeo.
-    // Si la dirección 'address' es la *absoluta* (después de sumar RB), chqueamos limities.
+    // Si soy Usuario normal, tengo que respetar mis limites (RB y RL)
+    // RB = donde empieza mi memoria
+    // RL = hasta donde llega
     
     if (address < cpu_registers.RB || address > cpu_registers.RL) {
-        log_interrupt(INT_ADDR_INVALID, "Violacion de segmento (Direccion Fuera de Rango)");
-        return 0;
+        log_interrupt(INT_ADDR_INVALID, "ERROR: Violacion de Segmento (Address fuera de RB-RL)!");
+        generate_interrupt(INT_ADDR_INVALID);
+        return 0; // Fallo
     }
-    return 1;
+    return 1; // Todo bien
 }
 
-// Maneja la generación de interrupciones
+// Aqui manejamos las interrupciones
+// Es cuando pasa algo importante y hay que parar lo que haciamos
 void generate_interrupt(int code) {
-    // Salvaguarda de contexto (Simplificado: Pone PC en Stack o similar?)
-    // La especificación dice "La máquina debe salvaguardar registros".
-    // Implementación simple: Push PC & PSW to Stack System o similar.
-    // Por simplicidad educativa: Solo saltamos al vector y logueamos.
-    // Un OS real salvaría todo. Aqui asumiremos que el handler del OS (sw) lo hace
-    // o que es mágico.
+    log_instruction(cpu_registers.PSW.pc, "INTERRUPCION", code);
     
-    log_instruction(cpu_registers.PSW.pc, "INT_HANDLER", code);
+    // Validar codigo de interrupcion (0-8)
+    if (code < 0 || code > 8) {
+        // Evitar recursion infinita si el mismo INT_CODE_INVALID falla
+        if (code != INT_CODE_INVALID) {
+             generate_interrupt(INT_CODE_INVALID);
+        }
+        return;
+    }
+
+    // Cambiamos a Modo Kernel para atender el problema
+    int old_mode = cpu_registers.PSW.operation_mode;
+    int old_cc = cpu_registers.PSW.condition_code;
+    int old_int = cpu_registers.PSW.interrupt_enable;
     
-    // Buscar dirección del manejador en vector (simulado)
-    // Asumimos vector en direcciones bajas (ej: 0..10) memoria OS
-    // O simplificamos: El PC salta a una dirección fija de manejo de interrupciones
-    // Digamos dirección 10 + code
-    
-    // OJO: La especificación no dice dónde está el vector.
-    // Asumiremos que el OS (loader) pone "jumps" en las direcciones 0-9.
-    
-    // Cambiar a Modo Kernel
-    // int old_mode = cpu_registers.PSW.operation_mode;
     cpu_registers.PSW.operation_mode = MODE_KERNEL;
-    cpu_registers.PSW.interrupt_enable = INT_DISABLED; // Deshabilitar int anidadas
+    cpu_registers.PSW.interrupt_enable = INT_DISABLED; // Apagamos interrupciones anidadas
     
-    // Salvar PC viejo en Pila (simulado, o el OS deberia hacerlo?) 
-    // Haremos PUSH del PC actual para poder volver con RETRN?
-    // La instrucción RETRN dice "restaura PC desde pila". 
-    // Así que SÍ, debemos empujar el PC antes de saltar.
+    // IMPORTANTE: Hay que guardar TODO EL CONTEXTO para poder volver.
+    // Registros a guardar: PC, PSW, AC, RX.
     
-    cpu_registers.SP--;
+    // 1. Push PC
+    cpu_registers.SP--; 
     mem_write(cpu_registers.SP, int_to_word(cpu_registers.PSW.pc));
     
-    // Saltar al manejador (Direccion = code * 10, por ejemplo)
-    // O simplemente asumimos que el vector esta en 'code'.
-    cpu_registers.PSW.pc = code * 10; // Ejemplo: Int 2 -> Dir 20
+    // 2. Push Flags (Empaquetamos en un numero: 100*CC + 10*Mode + Int)
+    int flags_packed = (old_cc * 100) + (old_mode * 10) + old_int;
+    cpu_registers.SP--;
+    mem_write(cpu_registers.SP, int_to_word(flags_packed));
+    
+    // 3. Push AC
+    cpu_registers.SP--;
+    mem_write(cpu_registers.SP, cpu_registers.AC);
+    
+    // 4. Push RX
+    cpu_registers.SP--;
+    mem_write(cpu_registers.SP, int_to_word(cpu_registers.RX));
+    
+    // Buscamos la direccion del manejador en la Tabla de Vectores (Memoria[code])
+    Word handler_word = mem_read(code);
+    int handler_addr = word_to_int(handler_word);
+    
+    log_event("Saltando a Manejador en %d (Leido de Memoria[%d])", handler_addr, code);
+    cpu_registers.PSW.pc = handler_addr; 
 }
 
 /* 
- * Resolución de Operandos según Direccionamiento
- * Devuelve el VALOR del operando (si es inmediato) o el DATOS de memoria (si es directo/indexado)
- * Si devuelve -1 indica error (excepción generada dentro).
- * PERO espera, necesitamos diferenciar Valor vs Dirección.
- * Instrucciones LOAD necesitan el valor. STR necesitan la dirección.
+ * Esta funcion calcula cual es la direccion real que queremos usar
+ * Revisa si es Directo o Indexado.
  */
- 
 int get_effective_address() {
-    int addr = -1;
+    int addr = -1; // -1 significa error o invalido
     int mode = cpu_registers.IR.direccionamiento;
     int val = cpu_registers.IR.valor;
     
     if (mode == ADDR_DIRECT) {
+        // Directo: El valor ES la direccion
         addr = val;
     } else if (mode == ADDR_INDEXED) {
-        // Indexado: Dirección = Base (AC o RX?) + Desplazamiento
-        // Spec: "5 últimos dígitos son un índice a partir del acumulador"
-        // o "RX + valor"? La diapositiva dice "indice a partir del acumulador".
-        // Usualmente es Base + Index. Asumiremos Address = AC + Valor (del IR).
+        // Indexado: La direccion es el valor + lo que haya en el Acumulador
+        // Esto sirve para recorrer arreglos
         addr = word_to_int(cpu_registers.AC) + val;
     } else if (mode == ADDR_IMMEDIATE) {
-        // No tiene dirección efectiva
+        // Inmediato: No hay direccion, el valor es el dato mismo
         return -1;
     }
     
-    // Ajuste de Relocalización y Protección (Base Limit)
+    // Ahora revisamos proteccion y relocalizacion si somos Usuario
     if (cpu_registers.PSW.operation_mode == MODE_USER) {
-        // Si modo usuario, dirección es relativa a RB
+        // Sumamos el Registro Base
         addr += cpu_registers.RB;
         
-        // Protección
-        if (addr > cpu_registers.RL) { // RB ya está implícito al sumar
-            log_interrupt(INT_ADDR_INVALID, "Violacion de segmento");
-            return -2; // Error
+        // Usamos la funcion centralizada de proteccion
+        if (!check_memory_protection(addr)) {
+            // El log ya se hizo adentro de check_memory_protection
+            return -2; // Codigo de error especial
         }
     }
     
@@ -173,22 +190,24 @@ int get_effective_address() {
 }
 
 /* =========================================================================
- * IMPLEMENTACIÓN DE INSTRUCCIONES
+ * AQUI SE EJECUTAN LAS INSTRUCCIONES
  * ========================================================================= */
 
+// Ejecuta sumas, restas, multiplica, divide
 void exec_arithmetic(int opcode) {
     int operand_val = 0;
     
+    // Vemos si el dato viene directo en la instruccion o esta en memoria
     if (cpu_registers.IR.direccionamiento == ADDR_IMMEDIATE) {
-        operand_val = cpu_registers.IR.valor;
+        operand_val = cpu_registers.IR.valor; // El dato es este numero
     } else {
         int addr = get_effective_address();
-        if (addr < 0) return; // Error ya manejado
-        operand_val = word_to_int(mem_read(addr));
+        if (addr < 0) return; // Si fallo la direccion, abortamos
+        operand_val = word_to_int(mem_read(addr)); // Vamos a buscarlo a memoria
     }
     
     int ac_val = word_to_int(cpu_registers.AC);
-    long long res = 0; // Usar long long para detectar overflow
+    long long res = 0; // Uso long long para que quepa si se pasa (overflow)
 
     switch(opcode) {
         case OP_SUM: 
@@ -201,44 +220,49 @@ void exec_arithmetic(int opcode) {
             res = (long long)ac_val * operand_val; 
             break;
         case OP_DIVI: 
-            if (operand_val == 0) {
-                log_interrupt(INT_INST_INVALID, "Division por Cero"); 
-                // Usando cod 5 pq no hay especifico, o 8? Mejor 5 'Instruccion invalida' o custom.
+            if (operand_val == 0) { // Cuidado con dividir por cero
+                log_interrupt(INT_INST_INVALID, "Error Matemático: Division por Cero"); 
+                generate_interrupt(INT_INST_INVALID);
                 return;
             }
             res = ac_val / operand_val; 
             break;
     }
     
-    // Check Overflow (limite 7 digitos = 9999999)
+    // Revisamos si el numero es muy grande para caber (Overflow)
+    // Nuestro sistema aguanta hasta 7 digitos de magnitud (9,999,999)
     if (res > 9999999 || res < -9999999) {
         cpu_registers.PSW.condition_code = CC_OVERFLOW;
-        log_interrupt(INT_OVERFLOW, "Desbordamiento Aritmetico");
-        // Truncar para seguir
+        log_interrupt(INT_OVERFLOW, "Desbordamiento (Numero muy grande)");
+        generate_interrupt(INT_OVERFLOW);
+        // Lo cortamos para que quepa, aunque este mal
         res = res % 10000000;
     }
     
+    // Guardamos el resultado en el Acumulador
     cpu_registers.AC = int_to_word((int)res);
-    update_cc();
+    update_cc(); // Actualizamos si es positivo, negativo o cero
 }
 
+// Mueve cosas entre Memoria y CPU
 void exec_transfer_mem(int opcode) {
     int addr = get_effective_address();
-    if (addr < 0 && opcode != OP_LOAD) return; // Error de dir
-    // OP_LOAD admite Inmediato? Spec dice: "Carga en AC el contenido de la posición... (según modo)"
-    // Si modo=Inmediato, LOAD carga el valor LITERAL.
+    // LOAD con inmediato es especial, no necesita direccion
+    if (addr < 0 && !(opcode == OP_LOAD && cpu_registers.IR.direccionamiento == ADDR_IMMEDIATE)) return; 
     
     if (opcode == OP_LOAD) {
         if (cpu_registers.IR.direccionamiento == ADDR_IMMEDIATE) {
+            // LOAD Inmediato: AC = Numero
             cpu_registers.AC = int_to_word(cpu_registers.IR.valor);
         } else {
+            // LOAD Memoria: AC = Memoria[addr]
             if (addr < 0) return;
             cpu_registers.AC = mem_read(addr);
         }
     } else if (opcode == OP_STR) {
+        // STR (Store): Guardar AC en Memoria
         if (cpu_registers.IR.direccionamiento == ADDR_IMMEDIATE) {
-            // STR inmediato no tiene sentido (store 5 in 10?) -> Error
-            log_interrupt(INT_INST_INVALID, "STR Inmediato no valido");
+            log_interrupt(INT_INST_INVALID, "No puedes hacer STR Inmediato (donde guardo?)");
             return;
         }
         if (addr < 0) return;
@@ -246,17 +270,15 @@ void exec_transfer_mem(int opcode) {
     }
 }
 
+// Saltos (JUMP)
 void exec_jump(int opcode) {
     int addr = get_effective_address();
-    // Saltos suelen ser a direcciones directas de codigo.
-    // get_effective_address ya maneja la relocalización si es usuario.
-    if (addr < 0) return;
+    if (addr < 0) return; // Direccion mala
     
-    int jump = 0;
-    int sp_val_int = 0;
+    int jump = 0; // Bandera para saber si saltamos o no
+    int sp_val_int = 0; // Valor del tope de la pila
     
-    // Para saltos condicionales, comparamos AC con M[SP] (Tope Pila)
-    // OJO: Spec dice "Si AC == M[SP]".
+    // Para los saltos condicionales, comparamos AC con lo que hay en el tope de la Pila
     if (opcode != OP_J) {
         Word sp_val = mem_read(cpu_registers.SP);
         sp_val_int = word_to_int(sp_val);
@@ -265,18 +287,20 @@ void exec_jump(int opcode) {
     int ac_val = word_to_int(cpu_registers.AC);
 
     switch(opcode) {
-        case OP_J: jump = 1; break;
-        case OP_JMPE:  if (ac_val == sp_val_int) jump = 1; break;
-        case OP_JMPNE: if (ac_val != sp_val_int) jump = 1; break;
-        case OP_JMPLT: if (ac_val < sp_val_int)  jump = 1; break;
-        case OP_JMPLGT:if (ac_val > sp_val_int)  jump = 1; break;
+        case OP_J: jump = 1; break; // Salto siempre
+        case OP_JMPE:  if (ac_val == sp_val_int) jump = 1; break; // Salto si Igual
+        case OP_JMPNE: if (ac_val != sp_val_int) jump = 1; break; // Salto si Diferente
+        case OP_JMPLT: if (ac_val < sp_val_int)  jump = 1; break; // Salto si Menor
+        case OP_JMPLGT:if (ac_val > sp_val_int)  jump = 1; break; // Salto si Mayor
     }
     
     if (jump) {
+        // Cambiamos el PC para saltar a esa instruccion
         cpu_registers.PSW.pc = addr;
     }
 }
 
+// Comparacion
 void exec_comp() {
     int val = 0;
     if (cpu_registers.IR.direccionamiento == ADDR_IMMEDIATE) {
@@ -289,112 +313,174 @@ void exec_comp() {
     
     int ac_val = word_to_int(cpu_registers.AC);
     
+    // Solo actualizamos el PSW, no cambiamos ningun registro de datos
     if (ac_val == val) cpu_registers.PSW.condition_code = CC_ZERO;
     else if (ac_val < val) cpu_registers.PSW.condition_code = CC_NEGATIVE;
     else cpu_registers.PSW.condition_code = CC_POSITIVE;
 }
 
+// Operaciones de Pila (Stack)
 void exec_stack(int opcode) {
     if (opcode == OP_PSH) {
-        cpu_registers.SP--;
-        // Validar Overflow de Pila (si SP baja de su limite)
-        // Ojo con colisiones Heap/Stack
-        mem_write(cpu_registers.SP, cpu_registers.AC);
+        // Push: Meter a la pila
+        cpu_registers.SP--; // La pila crece hacia abajo (direcciones menores)
+        
+        // CHECK OVERFLOW DE PILA (Si se cruza con Kernel o OS?)
+        // Por ahora solo verificamos que no sea negativo (aunque SP es int)
+        // Pero mas importante es el UNDERFLOW en POP
+        mem_write(cpu_registers.SP, cpu_registers.AC); // Guardamos AC
     } else if (opcode == OP_POP) {
-        cpu_registers.AC = mem_read(cpu_registers.SP);
-        cpu_registers.SP++;
+        // Pop: Sacar de la pila
+        // CHECK UNDERFLOW
+        // Si SP >= RX (Base de la Pila), significa que esta vacia (porque crece hacia abajo)
+        if (cpu_registers.SP >= cpu_registers.RX) {
+            log_interrupt(INT_UNDERFLOW, "Error: Stack Underflow (Pila Vacia)");
+            generate_interrupt(INT_UNDERFLOW);
+            return;
+        }
+        
+        cpu_registers.AC = mem_read(cpu_registers.SP); // Recuperamos a AC
+        cpu_registers.SP++; // "Borramos" subiendo el puntero
     }
 }
 
 /* =========================================================================
- * LOOP PRINCIPAL
+ * CICLO PRINCIPAL DE LA CPU
+ * Instruccion por instruccion
+ * ========================================================================= */
+
+// Flag de ejecucion
+int cpu_running = 0;
+
+/* =========================================================================
+ * CICLO PRINCIPAL DE LA CPU
+ * Instruccion por instruccion
  * ========================================================================= */
 
 void cpu_cycle() {
-    // 0. Chequear Interrupciones Hardware (DMA)
+    // 0. Si la CPU esta apagada, no hacemos nada
+    if (!cpu_running) return;
+
+    // 0.1 Chequear INT Harware (como la del DMA)
+    // Si hay una pendiente y estan habilitadas, la atendemos
     if (interrupt_pending_dma && cpu_registers.PSW.interrupt_enable) {
-        interrupt_pending_dma = 0; // Clear line
+        interrupt_pending_dma = 0; // Ya la vimos
         generate_interrupt(INT_IO_DONE);
-        return; // Atender inmediatamente
+        return; // Prioridad a la interrupcion
     }
 
-    // 1. FETCH
+    // 1. FETCH (Busqueda)
+    // Buscamos la siguiente instruccion en memoria donde apunte PC
     int pc = cpu_registers.PSW.pc;
-    // Validar PC dentro de limites
-    // (Si estamos en usuario, PC es relativo? Asumiremos PC absoluto por simplicidad en simulador,
-    // pero manejado con offset al inicio del programa).
-    // Para simplificar, PC es absoluto.
     
+    // Seguridad para no leer mas alla del fin del mundo
     if (pc >= MEM_SIZE) {
-        log_event("FATAL: PC fuera de memoria (%d)", pc);
+        log_event("ERROR FATAL: El PC se salio de la memoria (%d)!", pc);
+        cpu_running = 0; // Detener CPU
         return;
     }
 
     Word instruction_word = mem_read(pc);
     
-    // Log
-    log_instruction(pc, "FETCH", instruction_word.digits);
+    // CHEQUEO DE CENTINELA (END_PROGRAM)
+    // Si encontramos el valor magico, detenemos todo.
+    if (instruction_word.digits == SENTINEL_VAL) {
+        log_event("--- FIN DE PROGRAMA DETECTADO (Sentinel) ---");
+        cpu_running = 0; // Apagar motor
+        return; 
+    }
+    
+    // Anotamos en la bitacora que hicimos
+    log_instruction(pc, "FETCH (Buscando)", instruction_word.digits);
 
-    // Increment PC
+    // Avanzamos el PC para la proxima
     cpu_registers.PSW.pc++;
 
-    // 2. DECODE
+    // 2. DECODE (Decodificacion)
+    // Desarmamos el numero para entender que instruccion es
     int raw = instruction_word.digits;
+    
+    // Los ultimos 5 son el valor
     cpu_registers.IR.valor = raw % 100000;
+    // El del medio es el modo de direccionamiento
     cpu_registers.IR.direccionamiento = (raw / 100000) % 10;
+    // Los primeros 2 son el Codigo de Operacion (Opcode)
     cpu_registers.IR.cod_op = (raw / 1000000);
     
     int op = cpu_registers.IR.cod_op;
 
-    // 3. EXECUTE
+    // 3. EXECUTE (Ejecucion)
+    // Dependiendo del Opcode, llamamos a la funcion que toca
     switch(op) {
-        // Grupo 1: Aritmética
+        // Aritmética
         case OP_SUM: case OP_RES: case OP_MULT: case OP_DIVI:
             exec_arithmetic(op); 
             break;
             
-        // Grupo 2: Transferencia Memoria
+        // Memoria
         case OP_LOAD: case OP_STR:
             exec_transfer_mem(op); 
             break;
             
-        // Grupo 3: Transferencia Registros Especiales
+        // Registros Especiales
         case OP_LOADRX: cpu_registers.AC = int_to_word(cpu_registers.RX); break;
         case OP_STRRX:  cpu_registers.RX = word_to_int(cpu_registers.AC); break;
         
-        // Grupo 4: Comparación y Saltos Condicionales
+        // Comparaciones y Saltos
         case OP_COMP:   exec_comp(); break;
         case OP_JMPE: case OP_JMPNE: case OP_JMPLT: case OP_JMPLGT:
             exec_jump(op); 
             break;
             
-        // Grupo 8: Salto Incondicional (Puesto aqui por similitud)
+        // Salto Incondicional
         case OP_J:
             exec_jump(op); 
             break;
             
-        // Grupo 5: Sistema
+        // Sistema
         case OP_SVC:
+            // Llamada al sistema (System Call)
             generate_interrupt(INT_SVC);
             break;
         case OP_RETRN:
-             // Pop PC from Stack
-             cpu_registers.PSW.pc = word_to_int(mem_read(cpu_registers.SP));
-             cpu_registers.SP++;
-             // Restaurar modo anterior? La spec no detalla, asumimos retorno simple.
+             // Volver de una subrutina o interrupcion
+             // Recuperamos CONTEXTO COMPLETO (orden inverso al push)
+             // 1. Pop RX
+             {
+                 cpu_registers.RX = word_to_int(mem_read(cpu_registers.SP));
+                 cpu_registers.SP++;
+                 
+                 // 2. Pop AC
+                 cpu_registers.AC = mem_read(cpu_registers.SP);
+                 cpu_registers.SP++;
+                 
+                 // 3. Pop Flags (PSW)
+                 int flags = word_to_int(mem_read(cpu_registers.SP));
+                 cpu_registers.SP++;
+                 
+                 // Desempaquetar
+                 cpu_registers.PSW.interrupt_enable = flags % 10;
+                 cpu_registers.PSW.operation_mode = (flags / 10) % 10;
+                 cpu_registers.PSW.condition_code = (flags / 100) % 10;
+                 
+                 // 4. Pop PC
+                 cpu_registers.PSW.pc = word_to_int(mem_read(cpu_registers.SP));
+                 cpu_registers.SP++; 
+             }
              break;
         case OP_HAB:  cpu_registers.PSW.interrupt_enable = INT_ENABLED; break;
         case OP_DHAB: cpu_registers.PSW.interrupt_enable = INT_DISABLED; break;
         case OP_TTI:
-             // Timer simulado.
+             // Configurar Timer (no implementado completo aun)
              break;
         case OP_CHMOD:
+             // Cambiar entre modo Usuario y Kernel
              if (cpu_registers.PSW.operation_mode == MODE_KERNEL) {
                  cpu_registers.PSW.operation_mode = (cpu_registers.PSW.operation_mode == MODE_KERNEL) ? MODE_USER : MODE_KERNEL;
              }
              break;
              
-        // Grupo 6: Registros Base/Limite
+        // Registros Base/Limite
         case OP_LOADRB: cpu_registers.AC = int_to_word(cpu_registers.RB); break;
         case OP_STRRB:  cpu_registers.RB = word_to_int(cpu_registers.AC); break;
         case OP_LOADRL: cpu_registers.AC = int_to_word(cpu_registers.RL); break;
@@ -402,21 +488,22 @@ void cpu_cycle() {
         case OP_LOADSP: cpu_registers.AC = int_to_word(cpu_registers.SP); break;
         case OP_STRSP:  cpu_registers.SP = word_to_int(cpu_registers.AC); break;
         
-        // Grupo 7: Pila
+        // Pila
         case OP_PSH: case OP_POP:
             exec_stack(op);
             break;
             
-        // Grupo 9: DMA
+        // DMA (Discos)
         case OP_SDMAP: dma.selected_track = cpu_registers.IR.valor; break;
         case OP_SDMAC: dma.selected_cylinder = cpu_registers.IR.valor; break;
         case OP_SDMAS: dma.selected_sector = cpu_registers.IR.valor; break;
         case OP_SDMAIO:dma.io_direction = cpu_registers.IR.valor; break;
         case OP_SDMAM: dma.memory_address = cpu_registers.IR.valor; break;
-        case OP_SDMAON: dma_start_transfer(); break;
+        case OP_SDMAON: dma_start_transfer(); break; // Arranca el hilo
             
         default:
-            log_interrupt(INT_INST_INVALID, "Opcode Invalido");
+            log_interrupt(INT_INST_INVALID, "Opcode que no entiendo (Invalido)");
+            generate_interrupt(INT_INST_INVALID);
             break;
     }
 }

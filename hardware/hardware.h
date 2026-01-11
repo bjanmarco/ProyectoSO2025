@@ -203,9 +203,23 @@ extern DMA_Controller dma;
 // Usamos un semáforo binario (valor 1) para controlar quién usa el bus.
 extern sem_t system_bus_lock;
 
+// VALOR CENTINELA: FF FF FF FF (-1)
+// Se usa para marcar el fin del programa y detener la CPU.
+#define WORD_SENTINEL_SIGN   1
+#define WORD_SENTINEL_DIGITS 9999999 // Usaremos -9999999 como convención simple interna o mejor:
+// Dado que Word tiene signo y digitos separados, definamos un valor unico imposible.
+// El simulador parsea digitos como positivos.
+// Pero la memoria es de Words.
+// Vamos a reusar un valor que no sea una instruccion valida.
+// Opcode 99 no existe.
+#define SENTINEL_VAL 99999999 
+
 /* =========================================================================
  * 6. API DE HARDWARE
  * ========================================================================= */
+
+// Flag para saber si la CPU sigue corriendo
+extern int cpu_running;
 
 // Inicialización
 void hardware_init();
